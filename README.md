@@ -1,5 +1,5 @@
 # PyXMP
-<center>*Python X-Matching package*<center>
+<center> Python X-Matching package <center>
 
 ## Description
 
