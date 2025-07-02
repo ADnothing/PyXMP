@@ -1,5 +1,8 @@
-from Xmatch import *
+#!/usr/bin/env python
+
 import numpy as np
+
+from Xmatch import Xmatch, fast_Xmatch, even_faster_Xmatch
 
 def eval(matching_func, test, ref, verbose=False, beta=1, *args, **kwargs):
 	"""
@@ -70,7 +73,7 @@ def recall(test, ref, thresholds, method="fast", *args, **kwargs):
 		Recall = len(candidates)/Nref
 	elif method == "dumb":
 		test_match_idx, ref_match_idx, score = even_faster_Xmatch(test, ref, thresholds)
-			Recall = len(test_match_idx)/Nref
+		Recall = len(test_match_idx)/Nref
 	else:
 		raise ValueError("{method} is unknown, use fast, vectorized or dumb.")
 	
