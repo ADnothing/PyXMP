@@ -4,132 +4,166 @@ import numpy as np
 import pandas as pd
 from numba import jit
 
-def Xmatch(cat_test, cat_ref, pos_cols_test, maj_col_ref, threshold, pos_cols_ref=[], other_cols_test=[], other_cols_ref=[]):
-	"""
-	Performs a cross-match between two catalogs (cat_test and cat_ref) based on positional and other parameter constraints.
-	This function works on "small" catalogs. It is fully vectorized thanks to the numpy function meshgrid, however,
-	if any of the two catalogs have too many sources, you may not be able to perform a cross match due to the
-	weight of huge float64 matrices.
+def Xmatch(cat_test, cat_ref, pos_cols_test, maj_col_ref, threshold, pos_cols_ref=[], other_cols_test=[], other_cols_ref=[], save=False, stats=False):
+    """
+    Performs a cross-match between two catalogs (cat_test and cat_ref) based on positional and other parameter constraints.
+    This function works on "small" catalogs. It is fully vectorized thanks to the numpy function meshgrid, however,
+    if any of the two catalogs have too many sources, you may not be able to perform a cross match due to the
+    weight of huge float64 matrices.
 	
-	Safe and user friendly.
+    Safe and user friendly.
 	
-	This function return an 2D array where rows are matched sources, 1st column is the index in ref of the matched source,
-	2nd is the index in test of the matched source, last column is the multiparameter error of the match.
+    This function return an 2D array where rows are matched sources, 1st column is the index in ref of the matched source,
+    2nd is the index in test of the matched source, last column is the multiparameter error of the match.
 
-	This function has been build to cross match sources within an single pointing. It may not work in general use.	
-	Sky coordinates and major axis are expected all three to be consistants, others parameters are expected consistants between test and ref.
+    This function has been build to cross match sources within an single pointing. It may not work in general use.	
+    Sky coordinates and major axis are expected all three to be consistants, others parameters are expected consistants between test and ref.
 	
-	Parameters:
-		cat_test (pd.DataFrame): Test catalog to be matched.
-		cat_ref (pd.DataFrame): Reference catalog to match against.
-		pos_cols_test (list): Names of position columns in test catalog (e.g., ['x', 'y']).
-		maj_col_ref (str): Column name in reference catalog where major axis is stored.
-		threshold (float or array): Threshold for matching. If array, first value is for position, rest for other parameters.
-		pos_cols_ref (list): Optional. Position column names in reference catalog (defaults to pos_cols_test).
-		other_cols_test (list): Optional. Additional test catalog columns to match on.
-		ther_cols_ref (list): Optional. Corresponding reference catalog columns.
+    Parameters:
+        cat_test (pd.DataFrame): Test catalog to be matched.
+        cat_ref (pd.DataFrame): Reference catalog to match against.
+        pos_cols_test (list): Names of position columns in test catalog (e.g., ['x', 'y']).
+        maj_col_ref (str): Column name in reference catalog where major axis is stored.
+        threshold (float or array): Threshold for matching. If array, first value is for position, rest for other parameters.
+        pos_cols_ref (list): Optional. Position column names in reference catalog (defaults to pos_cols_test).
+        other_cols_test (list): Optional. Additional test catalog columns to match on.
+        ther_cols_ref (list): Optional. Corresponding reference catalog columns.
+        save (Bool): Optional. If True, save the matched catalog with the matched references.
+        stats (Bool): Optional. If True, save a file with: # of match, Recall, Precision, F1score.
 
-	Returns:
-		candidates (np.ndarray): Array of matches [ref_index, test_index, match_error].
-	"""
+    Returns:
+        candidates (np.ndarray): Array of matches [ref_index, test_index, match_error].
+    """
         
-	#If no positional or other column names are given for ref/test, use corresponding defaults
-	if not pos_cols_ref:
-		pos_cols_ref = pos_cols_test
+    #If no positional or other column names are given for ref/test, use corresponding defaults
+    if not pos_cols_ref:
+        pos_cols_ref = pos_cols_test
 			
-	if not other_cols_ref:
-		other_cols_ref = other_cols_test
+    if not other_cols_ref:
+        other_cols_ref = other_cols_test
 	
-	if not other_cols_test:
-		other_cols_test = other_cols_ref
+    if not other_cols_test:
+        other_cols_test = other_cols_ref
 		
 	
-	#Ensure test and ref other_cols match in count
-	if len(other_cols_test) != len(other_cols_ref):
-		raise ValueError("Different number of columns used in test and ref")
+    #Ensure test and ref other_cols match in count
+    if len(other_cols_test) != len(other_cols_ref):
+        raise ValueError("Different number of columns used in test and ref")
 		
-	#Handle threshold: allow single float or array (for multiple parameters)
-	if isinstance(threshold, (list, np.ndarray)):
-		multiple_param_flag = True
-		if len(threshold) != len(other_cols_test) + 1:
-			raise ValueError("Must have one threshold for position and one threshold for each ellement in other_cols_test/other_cols_ref")
-		threshold = np.asarray(threshold)
-	else:
-		#Warn if thresholds are underspecified for multiple matching dimensions
-		print(type(threshold))
-		if len(other_cols_test)>0 or len(other_cols_ref)>0:
-			print("WARNING: Only 1 threshold specified")
-			print("Convert single threshold into array.")
-			nb_threshold = max(len(other_cols_test), len(other_cols_ref)) + 1
-			threshold = np.ones(nb_threshold)*threshold
-		multiple_param_flag = False
+    #Handle threshold: allow single float or array (for multiple parameters)
+    if isinstance(threshold, (list, np.ndarray)):
+        multiple_param_flag = True
+        if len(threshold) != len(other_cols_test) + 1:
+            raise ValueError("Must have one threshold for position and one threshold for each ellement in other_cols_test/other_cols_ref")
+        threshold = np.asarray(threshold)
+    else:
+        #Warn if thresholds are underspecified for multiple matching dimensions
+        print(type(threshold))
+        if len(other_cols_test)>0 or len(other_cols_ref)>0:
+            print("WARNING: Only 1 threshold specified")
+            print("Convert single threshold into array.")
+            nb_threshold = max(len(other_cols_test), len(other_cols_ref)) + 1
+            threshold = np.ones(nb_threshold)*threshold
+        multiple_param_flag = False
 	
 	
+    N_test = cat_test.shape[0]
+    N_ref = cat_ref.shape[0]
 	
 	
-	N_test = cat_test.shape[0]
-	N_ref = cat_ref.shape[0]
+    #Placeholder for matched candidates [ref_index, test_index, total_error]
+    candidates = np.empty((N_test, 3))*np.nan
 	
+    #Create 2D grids for vectorized distance calculations
+    XX_test, XX_ref = np.meshgrid(cat_test[pos_cols_test[0]].to_numpy(), cat_ref[pos_cols_ref[0]].to_numpy())
+    YY_test, YY_ref = np.meshgrid(cat_test[pos_cols_test[1]].to_numpy(), cat_ref[pos_cols_ref[1]].to_numpy())
+    _, MAJ_mat = np.meshgrid(np.zeros(N_test), cat_ref[maj_col_ref].to_numpy())
 	
-	#Placeholder for matched candidates [ref_index, test_index, total_error]
-	candidates = np.empty((N_test, 3))*np.nan
+    #Calculate normalized positional error (e.g., sky_distance/major axis size)
+    position_error = np.sqrt((XX_test - XX_ref)**2 + (YY_test - YY_ref)**2)/MAJ_mat
 	
-	#Create 2D grids for vectorized distance calculations
-	XX_test, XX_ref = np.meshgrid(cat_test[pos_cols_test[0]].to_numpy(), cat_ref[pos_cols_ref[0]].to_numpy())
-	YY_test, YY_ref = np.meshgrid(cat_test[pos_cols_test[1]].to_numpy(), cat_ref[pos_cols_ref[1]].to_numpy())
-	_, MAJ_mat = np.meshgrid(np.zeros(N_test), cat_ref[maj_col_ref].to_numpy())
+    #Mask values beyond position threshold
+    position_error[position_error > threshold[0]] = np.inf
+    squared_multi_parameter_error = position_error**2
 	
-	#Calculate normalized positional error (e.g., sky_distance/major axis size)
-	position_error = np.sqrt((XX_test - XX_ref)**2 + (YY_test - YY_ref)**2)/MAJ_mat
-	
-	#Mask values beyond position threshold
-	position_error[position_error > threshold[0]] = np.inf
-	squared_multi_parameter_error = position_error**2
-	
-	#If using additional parameters, calculate normalized error for each and accumulate
-	if multiple_param_flag:
-		specific_errors = np.zeros((len(other_cols_test), N_ref, N_test))
-		for k, col in enumerate(other_cols_test):
-			if col in pos_cols_test:
-				continue  #Avoid duplicating positional columns
-			else:
-				grid_test, grid_ref = np.meshgrid(cat_test[col].to_numpy(), cat_ref[other_cols_ref[k]].to_numpy())
-				sp_err = np.abs(grid_test - grid_ref)/grid_ref
-				sp_err[sp_err > threshold[k+1]] = np.inf
+    #If using additional parameters, calculate normalized error for each and accumulate
+    if multiple_param_flag:
+        specific_errors = np.zeros((len(other_cols_test), N_ref, N_test))
+        for k, col in enumerate(other_cols_test):
+            if col in pos_cols_test:
+                continue  #Avoid duplicating positional columns
+            else:
+                grid_test, grid_ref = np.meshgrid(cat_test[col].to_numpy(), cat_ref[other_cols_ref[k]].to_numpy())
+                sp_err = np.abs(grid_test - grid_ref)/grid_ref
+                sp_err[sp_err > threshold[k+1]] = np.inf
 				
-				specific_errors[k] = sp_err
+                specific_errors[k] = sp_err
 				
 	
-		#Sum all squared errors to form total error matrix
-		squared_multi_parameter_error += np.sum(specific_errors**2, axis=0)
+        #Sum all squared errors to form total error matrix
+        squared_multi_parameter_error += np.sum(specific_errors**2, axis=0)
 		
 		
-	#Final error after combining position + parameter errors
-	multi_parameter_error = np.sqrt(squared_multi_parameter_error)
+    #Final error after combining position + parameter errors
+    multi_parameter_error = np.sqrt(squared_multi_parameter_error)
 	
 	
-	#Greedy matching: select smallest error pairs, avoid double matches
-	ind_candidate = 0
-	for n in range(min(N_test, N_ref)):
+    #Greedy matching: select smallest error pairs, avoid double matches
+    ind_candidate = 0
+    for n in range(min(N_test, N_ref)):
 	
-		i, j = np.unravel_index(multi_parameter_error.argmin(), multi_parameter_error.shape)
+        i, j = np.unravel_index(multi_parameter_error.argmin(), multi_parameter_error.shape)
 		
-		if not(np.isinf(multi_parameter_error[i,j])):
-			#Store match [ref_index, test_index, error]
-			candidates[ind_candidate] = np.array([j, i, multi_parameter_error[i, j]])
-			ind_candidate += 1
-			#Remove these entries from future consideration
-			multi_parameter_error[:, j] = np.inf
-			multi_parameter_error[i, :] = np.inf
+        if not(np.isinf(multi_parameter_error[i,j])):
+            #Store match [ref_index, test_index, error]
+            candidates[ind_candidate] = np.array([j, i, multi_parameter_error[i, j]])
+            ind_candidate += 1
+            #Remove these entries from future consideration
+            multi_parameter_error[:, j] = np.inf
+            multi_parameter_error[i, :] = np.inf
+
+        else:
+            break #No more valid matches
+	
+    candidates = candidates[:ind_candidate,:]
+
+    if save:
+        print("Saving results...")
+        flags = np.zeros(len(cat_test), dtype=int)
+        ref_indexes = np.zeros(len(cat_test), dtype=int)
+        match_errors = np.zeros(len(cat_test))
+        for lines in candidates:
+	        r_idx = int(lines[0]) ; t_idx = int(lines[1]) ; m_err = lines[2]
+	        flags[t_idx] = 1
+	        ref_indexes[t_idx] = r_idx
+	        match_errors[t_idx] = m_err
+	    
+        ref_indexes[flags == 0] *= np.nan
+        match_errors[flags == 0] *= np.nan
+	    
+        cat_test["match_flag"] = flags
+        cat_test["ref_index"] = ref_indexes
+        cat_test["match_error"] = match_errors
+        cat_test.to_csv("matched_cat.csv", index=False)
+
+    if stats:
+        Nref = len(cat_ref)
+        Ntest = len(cat_test)
+        Nmatch = candidates.shape[0]
+	    
+        recall = Nmatch/Nref
+        precision = Nmatch/Ntest
 		
-		else:
-			break #No more valid matches
-	
-	
-	
-	candidates = candidates[:ind_candidate,:]
-	
-	return candidates
+        F_score = (2*precision*recall)/(precision + recall)
+		
+        hdr = "Nmatch\tPrec.\tRecall\tF1score\n"
+        stats = f"{Nmatch}\t{np.round(precision,2)}\t{np.round(recall,2)}\t{np.round(F_score,2)}"
+
+        with open("stats.txt", "w") as text_file:
+            text_file.write(hdr)
+            text_file.write(stats)
+
+    return candidates
 	
 #===================================================================================================================================================
 
