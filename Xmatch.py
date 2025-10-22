@@ -32,7 +32,7 @@ def Xmatch(cat_test, cat_ref, pos_cols_test, maj_col_ref, threshold, pos_cols_re
         stats (Bool): Optional. If True, save a file with: # of match, Recall, Precision, F1score.
 
     Returns:
-        candidates (np.ndarray): Array of matches [ref_index, test_index, match_error].
+        candidates (np.ndarray): Array of matches [test_index, ref_index, match_error].
     """
         
     #If no positional or other column names are given for ref/test, use corresponding defaults
@@ -133,13 +133,13 @@ def Xmatch(cat_test, cat_ref, pos_cols_test, maj_col_ref, threshold, pos_cols_re
         ref_indexes = np.zeros(len(cat_test), dtype=int)
         match_errors = np.zeros(len(cat_test))
         for lines in candidates:
-	        r_idx = int(lines[0]) ; t_idx = int(lines[1]) ; m_err = lines[2]
+	        t_idx = int(lines[0]) ; r_idx = int(lines[1]) ;  m_err = lines[2]
 	        flags[t_idx] = 1
 	        ref_indexes[t_idx] = r_idx
 	        match_errors[t_idx] = m_err
 	    
-        ref_indexes[flags == 0] *= np.nan
-        match_errors[flags == 0] *= np.nan
+        ref_indexes[flags == 0] = -1
+        match_errors[flags == 0] = -1
 	    
         cat_test["match_flag"] = flags
         cat_test["ref_index"] = ref_indexes
